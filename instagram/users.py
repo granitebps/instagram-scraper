@@ -4,19 +4,26 @@ accounts.
 `user` is {"id": ..., "username": ...} from refs.resolve_user (a username,
 @username, numeric id or profile link). Every endpoint first looks the
 user up with the logged-out profile root query (an ~8 KB answer by
-username; a numeric id goes through the app's users/<id>/info first for
-the username), which both proves the account exists (a null root is a
+username; a numeric id is first turned into the username with the web
+profile query), which both proves the account exists (a null root is a
 404) and supplies the numeric id / Facebook id the other calls need.
 Lookups are memoised in-process for LOOKUP_TTL seconds so a paging client
 does not pay for it on every page.
 
-Surfaces (probed 2026-09-22):
-  posts   the app's feed/user/<username>/username/ — 12 items per page
-          with every counter (play_count included) and full audio
-          metadata; cursor = next_max_id ("<media_pk>_<user_pk>"). When
-          that surface is walled for an exit, the same page comes from the
-          web PolarisProfilePostsQuery / _connection (same cursor format,
-          same fields minus play_count / duration).
+Surfaces:
+  posts   the logged-out profile grid,
+          PolarisLoggedOutDesktopWWWProfilePostsTabContentQuery: 12 thin
+          posts per page (code, caption, image, like + play counts) and a
+          cursor ("AQ…") that pages the whole timeline. Each post is then
+          filled in with its full media item (posts.full_item:
+          PolarisPostRootQuery, FANOUT_WORKERS at a time), so a page
+          carries every field; the grid's play count is kept (the full
+          item has none for reels). Since 2026-10-28 the web
+          PolarisProfilePostsQuery answers 401 "Please wait a few minutes"
+          (require_login) to anonymous callers and the app's
+          feed/user/<username>/username/ answered 403 in testing; the app
+          feed stays as the first-page fallback, and still pages an app
+          cursor ("<media_pk>_<user_pk>") handed out before the switch.
   reels   the app's POST clips/user/ — 12 reels per page, opaque max_id.
           Fallback (first page only: the logged-out reels tab has no
           pagination query): PolarisLoggedOutDesktopWWWProfileReelsTabContentQuery,
@@ -26,12 +33,14 @@ Surfaces (probed 2026-09-22):
   similar     PolarisAYMLFollowChainingListLoggedOutQuery, up to 44
           accounts (empty for some large accounts upstream).
 """
+import re
 import threading
 import time
 
 from . import parsers as P
+from . import posts as posts_api
 from .fetch import (
-    InstagramBadRequest, InstagramBlocked, InstagramExecutionError, InstagramGated, InstagramNotFound,
+    InstagramBadRequest, InstagramExecutionError, InstagramFieldException, InstagramNotFound,
     InstagramUpstreamError, graphql, mobile, run_parallel,
 )
 from .ssr import og_counts
@@ -39,6 +48,11 @@ from .ssr import og_counts
 LOOKUP_TTL = 600
 PAGE_SIZE = 12
 INVALID_CURSOR = "invalid cursor: pass the next_cursor value from the previous page unchanged"
+POSTS_GRID_QUERY = "PolarisLoggedOutDesktopWWWProfilePostsTabContentQuery"
+# the app feed's next_max_id; the grid's cursors are opaque "AQ…" strings
+_APP_CURSOR_RE = re.compile(r"\d+_\d+")
+STALE_APP_CURSOR = ("this cursor is from an earlier page format that can no longer be continued: "
+                    "request the first page again without a cursor")
 
 _lookup_lock = threading.Lock()
 _lookups = {}           # ("id"|"username", value) -> (expires, raw root user)
@@ -54,6 +68,27 @@ def _root_by_username(username):
     return raw if isinstance(raw, dict) and raw.get("pk") else None
 
 
+def _username_by_id(user_id):
+    """Numeric user id -> username, None when no such account.
+
+    The web profile query answers by id and carries the username; a missing
+    id answers field_exception (ids 1 and 99999999999999, 2026-10-16). The
+    app API's users/<id>/info answered "We're sorry, but something went
+    wrong" (status fail) to every unsigned call on 2026-10-16, so it is only
+    the second opinion when the web query itself fails."""
+    try:
+        data = graphql("PolarisProfilePageContentQuery", id=user_id, enable_integrity_filters=True)
+    except InstagramFieldException:
+        return None
+    except InstagramUpstreamError:
+        try:
+            info = mobile(f"users/{user_id}/info/")
+        except InstagramNotFound:
+            return None
+        return P.clean(P._dict(info.get("user")).get("username"))
+    return P.clean(P._dict(P._dict(data).get("user")).get("username"))
+
+
 def lookup(user):
     """The raw profile root for a resolved ref; InstagramNotFound if the
     account does not exist."""
@@ -66,13 +101,8 @@ def lookup(user):
     if key[0] == "username":
         raw = _root_by_username(key[1])
     else:
-        try:
-            info = mobile(f"users/{key[1]}/info/")
-        except InstagramNotFound:
-            raw = None
-        else:
-            username = P.clean(P._dict(info.get("user")).get("username"))
-            raw = _root_by_username(username.lower()) if username else None
+        username = _username_by_id(key[1])
+        raw = _root_by_username(username.lower()) if username else None
     if raw is None:
         raise InstagramNotFound(f"{_describe(user)} not found on Instagram")
     with _lookup_lock:
@@ -127,28 +157,58 @@ def get_profile(user):
 
 # ---- posts ---------------------------------------------------------------------------------
 
-def _web_posts(raw_user, cursor):
-    username = str(raw_user.get("username"))
-    fbid = str(raw_user.get("id") or raw_user.get("pk"))
+def _grid_page(raw_user, cursor):
+    """One page of the logged-out posts grid -> (thin raw nodes, next_cursor,
+    has_more). A cursor the grid cannot decode (garbage, or another
+    surface's) answers a null connection with field_exception."""
+    variables = {"first": PAGE_SIZE, "username": str(raw_user.get("username"))}
+    if cursor:
+        variables["after"] = cursor
     try:
-        if cursor:
-            data = graphql("PolarisProfilePostsTabContentQuery_connection", retry_execution_errors=False,
-                           first=PAGE_SIZE, after=cursor, id=fbid, include_multi_captions=False,
-                           data={"count": PAGE_SIZE, "include_reel_media_seen_timestamp": True,
-                                 "include_relationship_info": True, "latest_besties_reel_media": True,
-                                 "latest_reel_media": True}, username=username)
-        else:
-            data = graphql("PolarisProfilePostsQuery", username=username,
-                           data={"count": PAGE_SIZE, "include_reel_media_seen_timestamp": True,
-                                 "include_relationship_info": True, "latest_besties_reel_media": True,
-                                 "latest_reel_media": True})
-    except InstagramExecutionError:
+        data = graphql(POSTS_GRID_QUERY, retry_execution_errors=not cursor, **variables)
+    except (InstagramExecutionError, InstagramFieldException):
         if cursor:
             raise InstagramBadRequest(INVALID_CURSOR)
         raise
-    connection = P._dict(data.get("xdt_api__v1__feed__user_timeline_graphql_connection"))
-    posts = P.media_list(connection.get("edges"), owner=P.user_ref(raw_user))
+    root = data.get("xig_user_by_username")
+    if not isinstance(root, dict):
+        raise InstagramNotFound(f"@{raw_user.get('username')} not found on Instagram")
+    connection = root.get("polaris_ordered_timeline_connection")
+    if not isinstance(connection, dict):
+        if cursor:
+            raise InstagramBadRequest(INVALID_CURSOR)
+        if P.to_bool(raw_user.get("is_private")):
+            return [], None, False
+        raise InstagramUpstreamError(f"{POSTS_GRID_QUERY} answered no timeline")
+    nodes = [P._dict(edge).get("node") for edge in P._list(connection.get("edges"))]
+    nodes = [n for n in nodes if isinstance(n, dict) and (n.get("pk") or n.get("code"))]
     next_cursor, has_more = P.page_info(connection)
+    return nodes, next_cursor, has_more
+
+
+def _filled_in(node):
+    """A grid node -> its full media item, keeping the grid's play count
+    (the full item carries none for reels). A post the full queries cannot
+    serve keeps its grid fields rather than failing the page."""
+    code = P.clean(node.get("code"))
+    media_id = P.to_id(node.get("pk"))
+    if not code or not media_id:
+        return node
+    try:
+        item = posts_api.full_item(media_id, code)
+    except Exception as e:      # one post must not fail the page
+        print(f"instagram users/posts: post {code} kept its grid fields ({type(e).__name__}: {e})")
+        return node
+    item = dict(item)
+    if P._play_count(item) is None and P.to_int(node.get("play_count")) is not None:
+        item["play_count"] = node["play_count"]
+    return item
+
+
+def _web_posts(raw_user, cursor):
+    nodes, next_cursor, has_more = _grid_page(raw_user, cursor)
+    items = run_parallel([lambda node=node: _filled_in(node) for node in nodes])
+    posts = P.media_list(items, owner=P.user_ref(raw_user))
     return posts, next_cursor, has_more
 
 
@@ -173,10 +233,28 @@ def get_posts(user, cursor=None):
     """The user's timeline (posts, reels shared to the grid, carousels),
     newest first, 12 per page."""
     raw_user = lookup(user)
-    try:
-        posts, next_cursor, has_more = _app_posts(raw_user, cursor)
-    except (InstagramGated, InstagramBlocked):
-        posts, next_cursor, has_more = _web_posts(raw_user, cursor)
+    if cursor and _APP_CURSOR_RE.fullmatch(cursor):
+        # an app-feed cursor (handed out before 2026-10-28) only pages the
+        # app feed; the grid cannot decode it
+        try:
+            posts, next_cursor, has_more = _app_posts(raw_user, cursor)
+        except InstagramUpstreamError:
+            raise InstagramBadRequest(STALE_APP_CURSOR)
+    else:
+        try:
+            posts, next_cursor, has_more = _web_posts(raw_user, cursor)
+        except InstagramUpstreamError as grid_error:
+            # the app feed cannot continue a grid cursor (it would answer
+            # page 1 again), so it only stands in for a first page. Any
+            # failure of the stand-in surfaces the grid's own (retryable)
+            # error: the lookup just proved the account exists, so an app
+            # 404 / 400 must not turn a cursor-less page 1 into one.
+            if cursor:
+                raise
+            try:
+                posts, next_cursor, has_more = _app_posts(raw_user, None)
+            except (InstagramUpstreamError, InstagramBadRequest, InstagramNotFound):
+                raise grid_error
     if P.to_bool(raw_user.get("is_private")) and not posts:
         has_more = False
     return {
@@ -217,9 +295,9 @@ def get_reels(user, cursor=None):
         if cursor:
             raise InstagramBadRequest(INVALID_CURSOR)
         raise
-    except (InstagramGated, InstagramBlocked):
+    except InstagramUpstreamError:
         if cursor:
-            raise
+            raise     # app-API cursors (QVFB…) have no web equivalent
         reels, next_cursor, has_more = _web_reels(raw_user)
     else:
         reels = P.media_list(data.get("items"), owner=P.user_ref(raw_user))

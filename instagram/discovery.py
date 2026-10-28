@@ -13,6 +13,9 @@ What logged-out Instagram serves (probed 2026-09-22):
     itself is login-walled when called directly) and its first ranked
     posts; PolarisLocationPageTabContentQuery pages ranked / recent posts
     with a cursor. Location search is a login wall (ids come from posts).
+    2026-10-12: location POSTS went behind the login wall — the page's
+    preloaded tab is empty (top_posts []) and the tab query answers "Rate
+    limit exceeded" to every logged-out caller; the record still works.
   * audio: the audio page's own POST /api/v1/clips/music/ — 12 reels per
     page with an opaque max_id. Logged out neither that call's summary
     block nor the reels' clips_metadata name the track, so the artist /
@@ -27,7 +30,8 @@ import re
 from . import parsers as P
 from . import refs
 from .fetch import (
-    InstagramBadRequest, InstagramExecutionError, InstagramNotFound, InstagramUpstreamError, graphql, www_api,
+    InstagramBadRequest, InstagramExecutionError, InstagramGated, InstagramNotFound, InstagramRateLimited,
+    InstagramUpstreamError, graphql, www_api,
 )
 from .ssr import load, og_meta
 
@@ -103,9 +107,19 @@ def location_posts(location, tab="ranked"):
     (12-27 posts): the tab's pagination query
     (PolarisLocationPageTabContentQuery_connection) is a login wall, and
     the first query answers an empty page for any cursor logged out. An
-    unknown location answers an empty page too."""
-    data = graphql("PolarisLocationPageTabContentQuery", location_id=location, tab=tab,
-                   page_size_override=PAGE_SIZE, first=None, after=None)
+    unknown location answers an empty page too.
+
+    2026-10-12: logged out, the query answers "Rate limit exceeded" (code
+    1675004) from every exit and the location page renders no posts in a
+    real browser — a login wall, not a per-IP limit, so retrying on fresh
+    exits only burns ~7 s and proxy traffic. Fail fast with an honest
+    message instead of the misleading "rate limit" one."""
+    try:
+        data = graphql("PolarisLocationPageTabContentQuery", retry_rate_limit=False, location_id=location, tab=tab,
+                       page_size_override=PAGE_SIZE, first=None, after=None)
+    except InstagramRateLimited:
+        raise InstagramGated("Instagram now shows a location's posts only to logged-in users "
+                             "(logged-out location feeds are refused since 2026-10-12)")
     connection = P._dict(data.get("xdt_location_get_web_info_tab"))
     posts = P.media_list(connection.get("edges"))
     _, has_more = P.page_info(connection)

@@ -19,14 +19,21 @@ the JSON string the server hands back, passed verbatim). Logged out, some
 posts stop paging early (one reel with 13K comments ended at 31 on
 2026-09-23, another ran past 140). Replies to a comment and the likers list
 are login walls upstream and are not served.
+
+No sort option: logged out, Instagram serves comments newest-first and
+nothing else (checked 2026-10-09 — the logged-out query declares no sort
+variable; the logged-in PolarisPostCommentsPaginationQuery, doc_id
+25516980651312394, answers anonymously but ignores sort_order popular /
+recent / verified on both endpoints; the app's
+media/<id>/comments/?sort_order= and the www REST copy are login walls).
 """
 from urllib.parse import urlparse
 
 from . import parsers as P
 from . import refs
 from .fetch import (
-    InstagramBadRequest, InstagramExecutionError, InstagramFieldException, InstagramNotFound, get_redirect, graphql,
-    www_json,
+    InstagramBadRequest, InstagramExecutionError, InstagramFieldException, InstagramGated, InstagramNotFound,
+    get_redirect, graphql, www_json,
 )
 
 COMMENTS_PAGE_SIZE = 24
@@ -64,20 +71,27 @@ def _logged_out(media_id, code):
     raise InstagramNotFound(f"post {code} not found")
 
 
-def _full(post):
-    """The raw media item (XDT dialect, or the logged-out one when only that
-    surface serves it)."""
-    post = _resolved(post)
-    code, media_id = post["code"], post["id"]
+def full_item(media_id, code):
+    """The raw media item of a known post (XDT dialect, or the logged-out one
+    when only that surface serves it). PolarisPostRootQuery answers
+    field_exception for a missing or geo-gated post, and like the rest of
+    its /graphql/query family it can refuse an exit with 401 "Please wait a
+    few minutes" (InstagramGated; the profile posts query does so on every
+    exit since 2026-10-28) - both fall back to the logged-out post root."""
     try:
         data = graphql("PolarisPostRootQuery", shortcode=code)
-    except InstagramFieldException:
+    except (InstagramFieldException, InstagramGated):
         return _logged_out(media_id, code)
     items = P._list(P._dict(data.get("xdt_api__v1__media__shortcode__web_info")).get("items"))
     item = items[0] if items and isinstance(items[0], dict) else None
     if not item or not item.get("pk"):
         return _logged_out(media_id, code)
     return item
+
+
+def _full(post):
+    post = _resolved(post)
+    return full_item(post["id"], post["code"])
 
 
 def get_details(post):

@@ -139,6 +139,16 @@ class InstagramGated(InstagramUpstreamError):
     a redirect to /accounts/login/). Callers fall back to another surface."""
 
 
+class InstagramRateLimited(InstagramUpstreamError):
+    """`data` missing with "Rate limit exceeded" (code 1675004). Usually a
+    verdict on the caller's IP, so it is retried like InstagramBlocked (a
+    fresh session, through the fallback proxy when one is configured) -
+    unless the caller passes retry_rate_limit=False for a surface where it
+    is a standing wall: since 2026-10-12 PolarisLocationPageTabContentQuery
+    answers it to every logged-out caller (Instagram shows a location's
+    posts only to logged-in users)."""
+
+
 class InstagramBlocked(InstagramUpstreamError, Blocked):
     """403 / 429, or HTML where JSON was expected — retryable on a new exit."""
 
@@ -245,7 +255,7 @@ def _retrying(fn, no_retry=()):
             return fn()
         except no_retry:
             raise
-        except InstagramBlocked as e:
+        except (InstagramBlocked, InstagramRateLimited) as e:
             last = e
             _escalate()
         except InstagramUpstreamError as e:
@@ -285,7 +295,7 @@ def _error_text(errors):
     return "; ".join(str((e or {}).get("message", "")) for e in errors or [] if isinstance(e, dict))[:300]
 
 
-def graphql(name, retry_execution_errors=True, **variables):
+def graphql(name, retry_execution_errors=True, retry_rate_limit=True, **variables):
     """Run one persisted query -> its `data` object.
 
     A missing entity comes back as data with a null root (callers turn that
@@ -294,7 +304,8 @@ def graphql(name, retry_execution_errors=True, **variables):
     surfaced as an upstream error naming the query so a re-harvest is
     obvious from the logs. Paged calls pass retry_execution_errors=False:
     an undecodable cursor fails the same way every time, so retrying only
-    delays the 400."""
+    delays the 400. retry_rate_limit=False fails fast on InstagramRateLimited
+    for surfaces where it is a standing wall rather than a transient limit."""
     query = QUERIES[name]
     url = GRAPHQL_URLS[query["endpoint"]]
     body = {
@@ -360,10 +371,14 @@ def graphql(name, retry_execution_errors=True, **variables):
                 raise InstagramFieldException(f"{name} answered field_exception")
             if _is_gate(_error_text(errors)):
                 raise InstagramGated(f"{name} is login-gated")
+            if "rate limit exceeded" in _error_text(errors).lower():
+                raise InstagramRateLimited(f"{name} returned no data: {_error_text(errors)}")
             raise InstagramUpstreamError(f"{name} returned no data: {_error_text(errors) or 'empty'}")
         return data
 
     no_retry = (InstagramGated, InstagramFieldException) + (() if retry_execution_errors else (InstagramExecutionError,))
+    if not retry_rate_limit:
+        no_retry += (InstagramRateLimited,)
     return _retrying(once, no_retry=no_retry)
 
 

@@ -35,6 +35,10 @@ PROVIDER_VALUES = {
     "PolarisMultiCaptionCarouselEnabled": False,
     "PolarisReelsRecoDebugOverlayEnabled": False,
     "PolarisRepostsConsumptionEnabled": False,
+    # The one deliberate deviation from a logged-out browser (which sends
+    # false): true makes the logged-out posts grid add like_count,
+    # play_count and like_and_view_counts_disabled to each post (2026-10-28).
+    "PolarisSEOIsCrawler": True,
     "PolarisShortDramaEnabled": False,
     "PolarisWebSchoolsEnabled": False,
 }
@@ -50,6 +54,14 @@ QUERIES = {
     # profile header by username: pk, fbid, bio, bio links, counts, highlights tray
     "PolarisLoggedOutDesktopWWWProfileRootContentQuery": {
         "doc_id": "27981003384861049", "endpoint": "api", "providers": []},
+    # the profile's posts grid, what the logged-out profile page preloads
+    # (2026-10-28): 12 thin posts per page (pk, code, caption, display image,
+    # media / product type; like + play counts with the SEO-crawler provider
+    # true). `after` = page_info.end_cursor ("AQ…") pages the WHOLE timeline
+    # (8 pages in a row on one exit, no repeats); a bad cursor answers a null
+    # connection + field_exception; `first` is fixed at 12 upstream.
+    "PolarisLoggedOutDesktopWWWProfilePostsTabContentQuery": {
+        "doc_id": "29483846714553007", "endpoint": "api", "providers": ["PolarisSEOIsCrawler"]},
     # reels tab, 12 per page with like/comment/play counts (no known pagination query)
     "PolarisLoggedOutDesktopWWWProfileReelsTabContentQuery": {
         "doc_id": "27838951732404191", "endpoint": "api", "providers": []},
@@ -81,7 +93,11 @@ QUERIES = {
     "PolarisPostRootQuery": {
         "doc_id": "28210188581965596", "endpoint": "query",
         "providers": ["PolarisMultiCaptionCarouselEnabled", "PolarisShortDramaEnabled"]},
-    # a user's timeline, 12 full media per page, cursor "<media_pk>_<user_pk>"
+    # a user's timeline, 12 full media per page, cursor "<media_pk>_<user_pk>".
+    # Since 2026-10-28 PolarisProfilePostsQuery answers 401 "Please wait a
+    # few minutes" (require_login) to anonymous callers; users/posts reads
+    # the logged-out grid above instead. Both kept for a re-check if the
+    # wall lifts.
     "PolarisProfilePostsQuery": {
         "doc_id": "39740939532171951", "endpoint": "query", "providers": _POSTS_PROVIDERS},
     "PolarisProfilePostsTabContentQuery_connection": {
@@ -89,9 +105,12 @@ QUERIES = {
     # profile extras by pk: category, external link, bio links, clips count
     "PolarisProfilePageContentQuery": {
         "doc_id": "28036671149327607", "endpoint": "query", "providers": _PROFILE_PROVIDERS},
-    # a location's ranked / recent posts
+    # a location's ranked / recent posts. 2026-10-12: re-harvested (was
+    # 28211016731901625 with _PROFILE_PROVIDERS; the bundle now declares only
+    # ShortDrama). Logged out it answers "Rate limit exceeded" from every IP —
+    # see fetch.InstagramRateLimited / discovery.location_posts.
     "PolarisLocationPageTabContentQuery": {
-        "doc_id": "28211016731901625", "endpoint": "query", "providers": _PROFILE_PROVIDERS},
+        "doc_id": "28494425246833965", "endpoint": "query", "providers": ["PolarisShortDramaEnabled"]},
 }
 
 

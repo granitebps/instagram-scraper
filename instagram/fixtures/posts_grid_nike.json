@@ -1,0 +1,100 @@
+{
+ "data": {
+  "xig_user_by_username": {
+   "pk": "13460080",
+   "polaris_ordered_timeline_connection": {
+    "edges": [
+     {
+      "node": {
+       "__typename": "XIGPolarisVideoMedia",
+       "__isXIGPolarisMedia": "XIGPolarisVideoMedia",
+       "pk": "4016750272540708224",
+       "code": "De-XRdaPg2A",
+       "accessibility_caption": "Video by Nike on October 26, 2026. May be an image of sculpture, sword and text.",
+       "caption": {
+        "text": "Queen for a third time, @alexiaputellas."
+       },
+       "seo_canonical_url": null,
+       "display_uri": "https://scontent-atl3-1.cdninstagram.com/v/t51.82787-15/870221906_18678105337020081_4230120641961520041_n.jpg?stp=dst-jpg_e35_s640x640_tt6&_nc_cat=1&ccb=7-5&_nc_sid=18de74&efg=eyJlZmdfdGFnIjoiQ0xJUFMuYmVzdF9pbWFnZV91cmxnZW4uQzMifQ%3D%3D&_nc_ohc=H7ESTAeVQ-sQ7kNvwHQI9nc&_nc_oc=AdpOEk0dxqQJjAuqepSc0bfvWixmO_VX5Grjgy07nMr7TepdIV6XT-zY-Pa_VjQkt8w&_nc_zt=23&_nc_ht=scontent-atl3-1.cdninstagram.com&_nc_gid=jW8odWoTkE087cAMEomdOA&_nc_ss=79a8c&oh=00_AQTbub_cnfXwsIhMvqx4WhfXHdYjCDk-TBggWfCn6OcFBA&oe=6AE79932",
+       "like_and_view_counts_disabled": false,
+       "like_count": 51561,
+       "media_type": 2,
+       "product_type": "clips",
+       "user": {
+        "pk": "13460080",
+        "username": "nike",
+        "id": "17841400602400210"
+       },
+       "play_count": 3636501,
+       "id": "POLARIS_4016750272540708224"
+      },
+      "cursor": "AQHTC08IMjSLRwhNAgniUBs6aR_RYGiCi_BkCjdhqW--5-qEKyCBymI3EeUC8vnG1HI_rlAoQyJCPhKCYxDMAa68wg"
+     },
+     {
+      "node": {
+       "__typename": "XIGPolarisImageMedia",
+       "__isXIGPolarisMedia": "XIGPolarisImageMedia",
+       "pk": "4013351625707388876",
+       "code": "DeySgo5Bn_M",
+       "accessibility_caption": "Aerial view of Wankhede Stadium, home of the Mumbai Indians, overlooking the Arabian Sea and Mumbai skyline. Stadium lights illuminate the field with a Nike swoosh at the center, while “Get ready, Paltan.” appears above with Mumbai Indians and Nike branding.",
+       "caption": {
+        "text": "Nike x @mumbaiindians. The stage is set 🏏"
+       },
+       "seo_canonical_url": null,
+       "display_uri": "https://scontent-atl3-1.cdninstagram.com/v/t51.82787-15/862885637_18676503835020081_1921592742269957224_n.jpg?stp=dst-jpg_e35_s640x640_tt6&_nc_cat=1&ccb=7-5&_nc_sid=18de74&efg=eyJlZmdfdGFnIjoiRkVFRC5iZXN0X2ltYWdlX3VybGdlbi5DMyJ9&_nc_ohc=vtMTOif2HcwQ7kNvwFajxgS&_nc_oc=Ado3ERiIvLA62Yd5EnfOoKQC32DJuScIhz_gXRmwvLTwhzVLoflUDfyevLyFd7fzAVc&_nc_zt=23&_nc_ht=scontent-atl3-1.cdninstagram.com&_nc_gid=jW8odWoTkE087cAMEomdOA&_nc_ss=79a8c&oh=00_AQS6dvRWfog7zU-w_RoqAdSlev_ZFjb5jW5zKCjrx0yBPA&oe=6AE7B7C0",
+       "like_and_view_counts_disabled": false,
+       "like_count": 289249,
+       "media_type": 1,
+       "product_type": "feed",
+       "user": {
+        "pk": "13460080",
+        "username": "nike",
+        "id": "17841400602400210"
+       },
+       "id": "POLARIS_4013351625707388876"
+      },
+      "cursor": "AQHTq8m2j4hGdNsg2dOVc7KHy3o0o_27RcckSt9eSRzLfmTKNZz87MoXM0aXn-SihffbJuN0f8f8uyGEhe3L4tgRiQ"
+     },
+     {
+      "node": {
+       "__typename": "XIGPolarisCarouselMedia",
+       "__isXIGPolarisMedia": "XIGPolarisCarouselMedia",
+       "pk": "4009607813604884681",
+       "code": "Dek_RAKjMDJ",
+       "accessibility_caption": "Photo by Nike on October 16, 2026. May be an image of text.",
+       "caption": {
+        "text": "Since 2004, the Doernbecher Freestyle initiative has worked with hundreds of kids to bring their stories to life through their own signature Nike shoes that will benefit their community.\n\nFor Year 22, six kids from the OHSU Doernbecher Children’s Hospital collaborated with Nike employee volunteers to create one-of-a-kind sneakers that are sold to benefit other kids just like them.\n\nOwen’s passion for dirt biking shows up in the mud-splatter pattern that extends from the toe cap on his Air Max 1/97.\n\nAurora reimagined her Structure Plus as her own dream hotel in Japan. She chose a soft, faux fur on the collar representing carpets and a room key charm bracelet.\n\nRoyce competes in team bull roping, just like his parents. This family tradition is reflected in the braided laces; his favorite belt has been recreated on the ankle strap of his AF1 Mid.\n\nCharlye’s ACG Rufus reflects her outdoorsy spirit and has a textured green swoosh that reminds her of moss. The UV-activated upper reveals a new color and hidden graphics.\n\nKamoryn’s GT Future has a color-fading pink and purple upper that he can see with his specific color-blindness. The goldfish details throughout nod to Kamoryn being under anesthesia post-surgery and seeing the animal swimming through the walls.\n\nAvery’s Air Jordan 11 Low IE has a midsole full of characters Avery drew herself, representing all the cute aliens she designed, with a main character plushie she named “Greg.”"
+       },
+       "seo_canonical_url": null,
+       "display_uri": "https://scontent-atl3-1.cdninstagram.com/v/t51.82787-15/851718624_18674710285020081_7359722250186308895_n.jpg?stp=dst-jpg_e35_s640x640_tt6&_nc_cat=109&ccb=7-5&_nc_sid=18de74&efg=eyJlZmdfdGFnIjoiQ0FST1VTRUxfSVRFTS5iZXN0X2ltYWdlX3VybGdlbi5DMyJ9&_nc_ohc=VGCuLRe1DmcQ7kNvwFKoOzv&_nc_oc=Ado6VynxzN4RCb1kP2VXjRYIowv3WXHw7Fp3CDx_5nbXcpJVsMLphC_5cCZ1AXf4UnY&_nc_zt=23&_nc_ht=scontent-atl3-1.cdninstagram.com&_nc_gid=jW8odWoTkE087cAMEomdOA&_nc_ss=79a8c&oh=00_AQTW6Pk0DnMU7t56L8V_rIJzQzAyqckR5-935JksjJyKXA&oe=6AE788AE",
+       "like_and_view_counts_disabled": false,
+       "like_count": 42505,
+       "media_type": 8,
+       "product_type": "carousel_container",
+       "user": {
+        "pk": "13460080",
+        "username": "nike",
+        "id": "17841400602400210"
+       },
+       "carousel_media_count": 8,
+       "id": "POLARIS_4009607813604884681"
+      },
+      "cursor": "AQHTuTrW28dxvpEBUXijXVpSRjo6FlbHZVByJWJD-zsIlCDw6UBgmTQSjITH5WNeXWQs0eOduvDCLiaLzIXjZ4CRhA"
+     }
+    ],
+    "page_info": {
+     "end_cursor": "AQHTEV_lmxEgvDx9KSTwJLuDOC9g4LE54gqAlNEIMUzUqJCifYF_oohGt-2R8Cgm4vbj-TbH6CkEl8HInUWfwUqHwg",
+     "has_next_page": true
+    }
+   },
+   "id": "17841400602400210"
+  }
+ },
+ "extensions": {
+  "server_metadata": {
+   "request_start_time_ms": 1793183571743,
+   "time_at_flush_ms": 1793183572018
+  },
+  "is_final": true
+ }
+}
