@@ -13,3 +13,11 @@ venv/
 /output/
 /debug/
 **/.DS_Store
+
+# not needed at runtime
+.git/
+.github/
+.claude/
+**/fixtures/
+**/test_*.py
+playground.png

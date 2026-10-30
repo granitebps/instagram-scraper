@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+# Update the homeserver deployment: pull, build, restart, verify, clean up.
+#
+#   scripts/deploy              on the homeserver, from any directory
+#   scripts/deploy --no-pull    deploy the checkout as it is
+#
+# From a laptop: ssh homeserver instagram-scraper/scripts/deploy
+#
+# Pulls the current branch (fast-forward only), rebuilds the image, lets
+# Compose recreate instagram-scraper if its image changed, waits until it is
+# healthy and asks it over MCP for its tool list. Finally it removes the
+# image this build replaced, and only that one: never other projects' images.
+#
+# Configuration (environment):
+#
+#   INSTAGRAM_COMPOSE    compose command (default: docker compose)
+set -euo pipefail
+
+COMPOSE="${INSTAGRAM_COMPOSE:-docker compose}"
+IMAGE=instagram-scraper:local
+CONTAINER=instagram-scraper
+TOOL_COUNT=7
+
+PULL=1
+for arg in "$@"; do
+  case "$arg" in
+    --no-pull) PULL=0 ;;
+    -h | --help)
+      sed -n '2,16s/^# \{0,1\}//p' "$0"
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $arg (see --help)" >&2
+      exit 2
+      ;;
+  esac
+done
+
+# ─── Output ────────────────────────────────────────────────────────────────────
+if [[ -t 1 ]]; then OK=$'\e[32m✓\e[0m' NO=$'\e[31m✗\e[0m'; else OK='✓' NO='✗'; fi
+step() { printf '%s... ' "$1"; }
+ok() { printf '%s\n' "${1:-$OK}"; }
+fail() {
+  printf '%s\n\n%s\n' "$NO" "$1" >&2
+  exit 1
+}
+
+image_id() { docker image inspect -f '{{.Id}}' "$1" 2>/dev/null || true; }
+
+# Everything runs inside main, so bash has read the whole script before
+# `git pull` can replace this file.
+main() {
+  cd "$(dirname "$0")/.."
+
+  echo
+  echo "Instagram Scraper MCP deploy"
+  echo "----------------------------"
+
+  step "Checking environment"
+  [[ -f docker-compose.yaml ]] || fail "No docker-compose.yaml in $PWD."
+  docker info >/dev/null 2>&1 ||
+    fail "Cannot reach Docker. Is this user in the docker group? (sudo usermod -aG docker \$USER, then log in again)"
+  $COMPOSE version >/dev/null 2>&1 || fail "Docker Compose is not available ($COMPOSE)."
+  ok
+
+  if [[ $PULL -eq 1 ]]; then
+    step "Pulling latest code"
+    [[ -z "$(git status --porcelain --untracked-files=no)" ]] ||
+      fail "The checkout has local changes. Commit or discard them, or deploy with --no-pull."
+    local before after
+    before="$(git rev-parse HEAD)"
+    git pull --ff-only --quiet || fail "git pull failed (diverged from the remote?)."
+    after="$(git rev-parse HEAD)"
+    if [[ "$before" == "$after" ]]; then
+      ok "$OK already up to date ($(git log -1 --format=%h))"
+    else
+      ok "$OK $(git log -1 --format=%h) ($(git rev-list --count "$before..$after") new commits)"
+      # The pull may have changed this script: run the new version instead.
+      if ! git diff --quiet "$before" "$after" -- scripts/deploy; then
+        echo "The deploy script changed; restarting it."
+        exec scripts/deploy --no-pull
+      fi
+    fi
+  fi
+
+  step "Checking network"
+  if docker network inspect ai-routing >/dev/null 2>&1; then
+    ok
+  else
+    docker network create ai-routing >/dev/null || fail "Could not create the ai-routing network."
+    ok "$OK created ai-routing"
+  fi
+
+  local old_id
+  old_id="$(image_id "$IMAGE")"
+
+  echo "Building image..."
+  $COMPOSE build || fail "Build failed. Nothing was deployed; $CONTAINER is still running the old image."
+
+  step "Starting Instagram Scraper MCP"
+  $COMPOSE up -d >/dev/null 2>&1 || fail "Could not start $CONTAINER. Check: $COMPOSE logs $CONTAINER"
+  ok
+
+  step "Checking health"
+  local health=""
+  for _ in $(seq 1 30); do
+    health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$CONTAINER" 2>/dev/null || true)"
+    [[ "$health" == healthy ]] && break
+    sleep 2
+  done
+  [[ "$health" == healthy ]] || fail "$CONTAINER did not become healthy (status: ${health:-unknown}). Check: $COMPOSE logs $CONTAINER"
+  ok
+
+  step "Checking MCP tools"
+  local tools
+  tools="$(docker exec "$CONTAINER" python -c "
+import json, os, urllib.request
+req = urllib.request.Request(
+    'http://127.0.0.1:%s/mcp' % os.environ.get('PORT', '8000'),
+    data=json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'}).encode(),
+    headers={'content-type': 'application/json', 'accept': 'application/json, text/event-stream'})
+print(len(json.load(urllib.request.urlopen(req, timeout=10))['result']['tools']))
+" 2>/dev/null || echo error)"
+  [[ "$tools" == "$TOOL_COUNT" ]] || fail "Expected $TOOL_COUNT tools, got: $tools. Check: $COMPOSE logs $CONTAINER"
+  ok "$OK $tools tools"
+
+  step "Removing replaced image"
+  local new_id
+  new_id="$(image_id "$IMAGE")"
+  if [[ -z "$old_id" || "$old_id" == "$new_id" ]]; then
+    ok "$OK nothing to remove"
+  # No --force: an image a container still uses stays.
+  elif docker image rm "$old_id" >/dev/null 2>&1; then
+    ok "$OK removed"
+  else
+    ok "$OK kept (still in use)"
+  fi
+
+  echo
+  echo "Instagram Scraper MCP is deployed. Docker disk use:"
+  docker system df
+}
+
+main "$@"

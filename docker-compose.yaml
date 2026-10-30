@@ -1,10 +1,42 @@
 services:
   instagram-scraper:
     build: .
+    image: instagram-scraper:local
+    container_name: instagram-scraper
+    init: true
     restart: unless-stopped
-    ports:
-      - "8000:8000"
+    # No published ports: only containers on ai-routing (Fami) reach
+    # http://instagram-scraper:8000/mcp.
+    networks:
+      - ai-routing
     environment:
       - PORT=8000
       # Optional — Instagram does not rate-limit at normal volume, so leave this unset.
       # - INSTAGRAM_PROXY=http://user:pass@host:port
+      # - MCP_TOOL_TIMEOUT=45
+      # - MCP_MAX_CONCURRENCY=4
+      # - MCP_CACHE_SIZE=500
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # Not measured yet. A posts page fans out to 12 full-item queries (4 at a
+    # time) per tool call, and location / explore pages are 1-2 MB of HTML,
+    # so this starts above threads-scraper's 128m.
+    mem_limit: 256m
+    mem_reservation: 64m
+    cpus: 0.5
+    pids_limit: 64
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  ai-routing:
+    external: true
+    name: ai-routing

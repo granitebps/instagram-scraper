@@ -41,7 +41,7 @@ from . import parsers as P
 from . import posts as posts_api
 from .fetch import (
     InstagramBadRequest, InstagramExecutionError, InstagramFieldException, InstagramNotFound,
-    InstagramUpstreamError, graphql, mobile, run_parallel,
+    InstagramTimeout, InstagramUpstreamError, graphql, mobile, run_parallel,
 )
 from .ssr import og_counts
 
@@ -238,6 +238,8 @@ def get_posts(user, cursor=None):
         # app feed; the grid cannot decode it
         try:
             posts, next_cursor, has_more = _app_posts(raw_user, cursor)
+        except InstagramTimeout:
+            raise
         except InstagramUpstreamError:
             raise InstagramBadRequest(STALE_APP_CURSOR)
     else:

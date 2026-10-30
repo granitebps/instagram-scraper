@@ -1,3 +1,5 @@
-bottle
-cheroot
-curl_cffi
+bottle==0.13.4
+cheroot==11.1.2
+curl_cffi==0.16.3
+marshmallow==4.3.1
+mcp==2.3.0

@@ -57,7 +57,16 @@ Failure taxonomy (scraper_errors, mapped to HTTP by route_glue):
   InstagramBlocked         403 / 429 / HTML instead of JSON          — retryable on a new exit
   InstagramBadRequest      upstream 400                              — never retried
   InstagramNotFound        unknown user / post / tag / location      — never retried
+  InstagramTimeout         the caller's deadline() ran out           — not retried here
+
+DEADLINE: `with deadline(seconds):` bounds every request, retry and backoff
+made inside the block (including run_parallel fan-out) to one total budget.
+Without it the nested retries (MAX_RETRIES x timeouts x backoff, times the
+surface fallbacks in users.py / posts.py) can run for minutes; the MCP
+server sets one per tool call. Unset = no bound, so the REST API and
+main.py behave as before.
 """
+import contextvars
 import json
 import os
 import secrets
@@ -66,6 +75,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from urllib.parse import urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -161,6 +171,39 @@ class InstagramNotFound(NotFound):
     """The user / post / tag / location does not exist — never retried."""
 
 
+class InstagramTimeout(InstagramUpstreamError):
+    """The deadline() budget ran out before Instagram answered."""
+
+
+# ---- deadline --------------------------------------------------------------------
+_deadline = contextvars.ContextVar("instagram_deadline", default=None)
+
+
+@contextmanager
+def deadline(seconds):
+    """Bound everything fetched inside the block to `seconds` in total."""
+    token = _deadline.set(time.monotonic() + seconds)
+    try:
+        yield
+    finally:
+        _deadline.reset(token)
+
+
+def _remaining():
+    end = _deadline.get()
+    return None if end is None else end - time.monotonic()
+
+
+def _timeout(default):
+    """The request timeout to use: `default`, cut to what the deadline leaves."""
+    left = _remaining()
+    if left is None:
+        return default
+    if left <= 0:
+        raise InstagramTimeout("ran out of time waiting for instagram.com")
+    return min(default, left)
+
+
 # ---- sessions --------------------------------------------------------------------
 # One curl session per worker thread (a curl handle must not be shared across
 # threads), each with its own random csrftoken/lsd pair. The mobile calls use
@@ -253,6 +296,8 @@ def _retrying(fn, no_retry=()):
     for attempt in range(1, config.MAX_RETRIES + 1):
         try:
             return fn()
+        except InstagramTimeout:
+            raise
         except no_retry:
             raise
         except (InstagramBlocked, InstagramRateLimited) as e:
@@ -262,7 +307,11 @@ def _retrying(fn, no_retry=()):
             last = e
             _drop_session()
         if attempt < config.MAX_RETRIES:
-            time.sleep(config.RETRY_BACKOFF * attempt)
+            pause = config.RETRY_BACKOFF * attempt
+            left = _remaining()
+            if left is not None and left <= pause:
+                raise InstagramTimeout(f"ran out of time retrying instagram.com (last error: {last})")
+            time.sleep(pause)
     raise last
 
 
@@ -341,8 +390,9 @@ def graphql(name, retry_execution_errors=True, retry_rate_limit=True, **variable
             "x-fb-lsd": sess._ig_lsd,
             "x-ig-app-id": WEB_APP_ID,
         }
+        timeout = _timeout(GRAPHQL_TIMEOUT)
         try:
-            resp = sess.post(url, data=body, headers=headers, timeout=GRAPHQL_TIMEOUT)
+            resp = sess.post(url, data=body, headers=headers, timeout=timeout)
         except Exception as e:
             raise InstagramUpstreamError(f"request failed: {type(e).__name__}: {e}")
         status = resp.status_code
@@ -401,11 +451,12 @@ def mobile(path, *, params=None, data=None):
             "accept-language": "en-US",
             "x-ig-app-id": MOBILE_APP_ID,
         }
+        timeout = _timeout(MOBILE_TIMEOUT)
         try:
             if data is not None:
-                resp = sess.post(url, data=data, params=params, headers=headers, timeout=MOBILE_TIMEOUT)
+                resp = sess.post(url, data=data, params=params, headers=headers, timeout=timeout)
             else:
-                resp = sess.get(url, params=params, headers=headers, timeout=MOBILE_TIMEOUT)
+                resp = sess.get(url, params=params, headers=headers, timeout=timeout)
         except Exception as e:
             raise InstagramUpstreamError(f"request failed: {type(e).__name__}: {e}")
         status = resp.status_code
@@ -464,8 +515,9 @@ def www_api(path, *, form, referer):
             "x-fb-lsd": sess._ig_lsd,
             "x-ig-d": "www",
         }
+        timeout = _timeout(GRAPHQL_TIMEOUT)
         try:
-            resp = sess.post(url, data=body, headers=headers, timeout=GRAPHQL_TIMEOUT)
+            resp = sess.post(url, data=body, headers=headers, timeout=timeout)
         except Exception as e:
             raise InstagramUpstreamError(f"request failed: {type(e).__name__}: {e}")
         status = resp.status_code
@@ -498,8 +550,9 @@ def www_json(path, *, params, label):
     def once():
         sess = _session()
         headers = {"accept": "*/*", "accept-language": "en-US,en;q=0.9", "referer": SITE + "/"}
+        timeout = _timeout(GRAPHQL_TIMEOUT)
         try:
-            resp = sess.get(url, params=params, headers=headers, timeout=GRAPHQL_TIMEOUT)
+            resp = sess.get(url, params=params, headers=headers, timeout=timeout)
         except Exception as e:
             raise InstagramUpstreamError(f"request failed: {type(e).__name__}: {e}")
         status = resp.status_code
@@ -533,8 +586,9 @@ def get_page(path, *, label):
 
     def once():
         sess = _session()
+        timeout = _timeout(PAGE_TIMEOUT)
         try:
-            resp = sess.get(url, headers=PAGE_HEADERS, timeout=PAGE_TIMEOUT, allow_redirects=True)
+            resp = sess.get(url, headers=PAGE_HEADERS, timeout=timeout, allow_redirects=True)
         except Exception as e:
             raise InstagramUpstreamError(f"request failed: {type(e).__name__}: {e}")
         status = resp.status_code
@@ -564,8 +618,9 @@ def get_redirect(path, *, label):
 
     def once():
         sess = _session()
+        timeout = _timeout(PAGE_TIMEOUT)
         try:
-            resp = sess.get(url, headers=PAGE_HEADERS, timeout=PAGE_TIMEOUT, allow_redirects=False)
+            resp = sess.get(url, headers=PAGE_HEADERS, timeout=timeout, allow_redirects=False)
         except Exception as e:
             raise InstagramUpstreamError(f"request failed: {type(e).__name__}: {e}")
         status = resp.status_code
@@ -586,13 +641,14 @@ def get_redirect(path, *, label):
 
 def run_parallel(fns):
     """Run zero-arg callables in parallel; results align with `fns`.
-    Exceptions propagate from the first failing call."""
+    Exceptions propagate from the first failing call. Each call runs in a
+    copy of the caller's context so a deadline() reaches the workers."""
     if not fns:
         return []
     if len(fns) == 1:
         return [fns[0]()]
     with ThreadPoolExecutor(max_workers=min(FANOUT_WORKERS, len(fns))) as ex:
-        futures = [ex.submit(fn) for fn in fns]
+        futures = [ex.submit(contextvars.copy_context().run, fn) for fn in fns]
         return [f.result() for f in futures]
 
 
