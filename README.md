@@ -13,19 +13,27 @@ streamable HTTP for Fami.
 | Tool | Input | Returns |
 |---|---|---|
 | `get_post` | `post` | One post or reel: caption, counts, author, media, carousel slides, location, tagged users, coauthors, audio. |
-| `get_post_comments` | `post`, `cursor` | Comments newest first, roughly 4-15 per page. No replies to comments. |
+| `get_post_comments` | `post`, `cursor`, `limit` | Comments newest first. No replies to comments. |
 | `get_profile` | `username` | Bio, bio links, category, follower / following / post counts, verified badge, highlights. |
-| `get_profile_posts` | `username`, `cursor` | The user's grid posts, newest first, 12 per page. |
-| `get_profile_reels` | `username`, `cursor` | The user's reels with play counts and audio, 12 per page. |
-| `search_posts` | `query`, `cursor` | Top reels for a keyword (`/popular/<keyword>/`) and related keywords, 12 per page. |
-| `get_hashtag_posts` | `tag`, `cursor` | Top reels for a hashtag, 12 per page. |
+| `get_profile_posts` | `username`, `cursor`, `limit` | The user's grid posts, newest first. |
+| `get_profile_reels` | `username`, `cursor`, `limit` | The user's reels with play counts and audio. |
+| `search_posts` | `query`, `cursor`, `limit` | Top reels for a keyword (`/popular/<keyword>/`) and related keywords. |
+| `get_hashtag_posts` | `tag`, `cursor`, `limit` | Top reels for a hashtag. |
 
 - `post` takes a shortcode (`DdcI4o0Prsz`), a numeric media id, or an
   instagram.com post, reel or share link.
 - `username` takes a username, `@username`, a numeric user id, or a profile link.
 - `tag` takes a hashtag with or without `#`, or an `/explore/tags/` link.
-- Paged tools return `next_cursor` and `has_more`. Pass `next_cursor` back as
-  `cursor` for the next page.
+- List tools return `limit` items per call (1-12, default 5), with
+  `next_cursor` and `has_more`. Pass `next_cursor` back as `cursor` for the
+  next items. The cursor is the server's own (`p:<offset>:<instagram cursor>`):
+  it walks through Instagram's page (12 posts, or roughly 4-15 comments) in
+  `limit`-sized slices, then moves on to Instagram's next page. The page is
+  cached, so later slices make no new requests to Instagram. A raw Instagram
+  cursor is still accepted and starts at the top of its page.
+- `get_profile_posts` fetches full details (one request per post) only for
+  the posts it returns, so `limit=5` costs about 6 requests instead of 13.
+  Each slice asks for the grid page again, one request.
 - Results are the scraper's JSON with null and empty fields left out. Avatar
   URLs (`profile_picture`) are dropped too: they repeat on every post owner
   and comment author.

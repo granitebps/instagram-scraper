@@ -19,6 +19,13 @@ shortcode, numeric media id or post / reel / share link; a username,
 
 Every tool answers with the scraper's JSON, null / empty fields and avatar
 URLs (`profile_picture`) dropped, as structured content plus one text block.
+
+List tools take `limit` (default 5) and return that many items of
+Instagram's page at a time. Their `next_cursor` is this server's own
+"p:<offset>:<instagram cursor>": the next slice of the same page while it
+lasts, then the start of Instagram's next page. The full page stays in the
+cache, so later slices cost no upstream requests; get_profile_posts instead
+fills in only the posts of the slice (one full-item query each).
 Failures come back as `isError: true` with
 {"error": {"code", "message", "retryable"}}.
 """
@@ -163,6 +170,50 @@ def _fetch(tool, fn, data, ttl):
     return value
 
 
+# ---- paging ----------------------------------------------------------------------
+
+CURSOR_PREFIX = "p:"
+DEFAULT_LIMIT = 5
+MAX_LIMIT = 12
+
+
+def _split_cursor(cursor):
+    """This server's cursor -> (Instagram's cursor, offset into its page).
+    A cursor without the prefix is Instagram's own, at offset 0."""
+    if not cursor or not cursor.startswith(CURSOR_PREFIX):
+        return cursor, 0
+    offset, _, upstream = cursor[len(CURSOR_PREFIX):].partition(":")
+    if not offset.isdigit():
+        raise ToolFailure("invalid_input", "cursor: pass the next_cursor value from the previous answer unchanged")
+    return upstream or None, int(offset)
+
+
+def _paged(tool, fn, schema, params, ttl, items_key, count_key, limit, windowed=False):
+    """One `limit`-sized slice of an Instagram page. `windowed` functions
+    slice the page themselves (offset / limit kwargs) and report its size
+    as `page_post_count`; the rest are sliced here from the cached page."""
+    upstream, offset = _split_cursor(params.pop("cursor"))
+    data = _validate(schema, {**params, "cursor": upstream})
+    if windowed:
+        page = dict(_fetch(tool, fn, {**data, "offset": offset, "limit": limit}, ttl))
+        page_size = page.pop("page_post_count", 0)
+        items = page.get(items_key) or []
+    else:
+        page = dict(_fetch(tool, fn, data, ttl))
+        page_size = len(page.get(items_key) or [])
+        items = (page.get(items_key) or [])[offset:offset + limit]
+    end = offset + len(items)
+    upstream_next = page.pop("next_cursor", None)
+    if items and end < page_size:
+        page["next_cursor"] = f"{CURSOR_PREFIX}{end}:{upstream or ''}"
+        page["has_more"] = True
+    elif upstream_next:
+        page["next_cursor"] = f"{CURSOR_PREFIX}0:{upstream_next}"
+    page[items_key] = items
+    page[count_key] = len(items)
+    return page
+
+
 async def _run(tool, work):
     """Call `work()` in a worker thread (bounded by MAX_CONCURRENCY) and map
     the scraper's failure taxonomy onto tool errors. Subclasses come before
@@ -195,11 +246,13 @@ async def _run(tool, work):
 READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=True)
 MEDIA_NOTE = (" Media is returned as URLs (`image`, `video`, carousel `items[]`); the Instagram CDN URLs "
               "are signed and expire, so download them soon after the call rather than storing them.")
-PAGE_NOTE = " Pass `next_cursor` from the previous answer as `cursor` for the next page while `has_more` is true."
+PAGE_NOTE = (" Returns `limit` items at a time (default 5). Pass `next_cursor` from the previous answer as "
+             "`cursor` for the next ones while `has_more` is true.")
 
 PostRef = Annotated[str, Field(description="Shortcode (e.g. DdcI4o0Prsz), numeric media id, or an instagram.com post / reel / share link.")]
 UserRef = Annotated[str, Field(description="Username, @username, numeric user id, or an instagram.com profile link.")]
-Cursor = Annotated[str | None, Field(description="next_cursor from the previous page; omit for the first page.")]
+Cursor = Annotated[str | None, Field(description="next_cursor from the previous answer; omit for the first items.")]
+Limit = Annotated[int, Field(ge=1, le=MAX_LIMIT, description=f"Items to return (1-{MAX_LIMIT}).")]
 
 server = MCPServer(
     name="instagram-scraper",
@@ -221,10 +274,10 @@ async def get_post(post: PostRef) -> CallToolResult:
 @server.tool(annotations=READ_ONLY, description=(
     "Get a post's comments as instagram.com shows them logged out: newest first, roughly 4-15 per "
     "page. Replies to comments are not available. Some posts stop paging early." + PAGE_NOTE))
-async def get_post_comments(post: PostRef, cursor: Cursor = None) -> CallToolResult:
+async def get_post_comments(post: PostRef, cursor: Cursor = None, limit: Limit = DEFAULT_LIMIT) -> CallToolResult:
     def work():
-        data = _validate(schemas.PostPageSchema, {"post": post, "cursor": cursor})
-        return _fetch("get_post_comments", posts.get_comments, data, cache_config.COMMENTS_CACHE)
+        return _paged("get_post_comments", posts.get_comments, schemas.PostPageSchema,
+                      {"post": post, "cursor": cursor}, cache_config.COMMENTS_CACHE, "comments", "comment_count", limit)
     return await _run("get_post_comments", work)
 
 
@@ -239,47 +292,50 @@ async def get_profile(username: UserRef) -> CallToolResult:
 
 
 @server.tool(annotations=READ_ONLY, description=(
-    "Get a user's posts (photos, carousels and reels shared to the grid), newest first, 12 per "
-    "page." + PAGE_NOTE + MEDIA_NOTE))
-async def get_profile_posts(username: UserRef, cursor: Cursor = None) -> CallToolResult:
+    "Get a user's posts (photos, carousels and reels shared to the grid), newest first."
+    + PAGE_NOTE + MEDIA_NOTE))
+async def get_profile_posts(username: UserRef, cursor: Cursor = None, limit: Limit = DEFAULT_LIMIT) -> CallToolResult:
     def work():
-        data = _validate(schemas.UserPageSchema, {"user": username, "cursor": cursor})
-        return _fetch("get_profile_posts", users.get_posts, data, cache_config.USER_MEDIA_CACHE)
+        return _paged("get_profile_posts", users.get_posts, schemas.UserPageSchema,
+                      {"user": username, "cursor": cursor}, cache_config.USER_MEDIA_CACHE, "posts", "post_count", limit,
+                      windowed=True)
     return await _run("get_profile_posts", work)
 
 
 @server.tool(annotations=READ_ONLY, description=(
-    "Get a user's reels (the Reels tab) with play counts and audio, newest first, 12 per page."
+    "Get a user's reels (the Reels tab) with play counts and audio, newest first."
     + PAGE_NOTE + MEDIA_NOTE))
-async def get_profile_reels(username: UserRef, cursor: Cursor = None) -> CallToolResult:
+async def get_profile_reels(username: UserRef, cursor: Cursor = None, limit: Limit = DEFAULT_LIMIT) -> CallToolResult:
     def work():
-        data = _validate(schemas.UserPageSchema, {"user": username, "cursor": cursor})
-        return _fetch("get_profile_reels", users.get_reels, data, cache_config.USER_MEDIA_CACHE)
+        return _paged("get_profile_reels", users.get_reels, schemas.UserPageSchema,
+                      {"user": username, "cursor": cursor}, cache_config.USER_MEDIA_CACHE, "reels", "reel_count", limit)
     return await _run("get_profile_reels", work)
 
 
 @server.tool(annotations=READ_ONLY, description=(
     "Search Instagram by keyword: the top reels for it (instagram.com/popular/<keyword>/) and "
-    "related keywords, 12 per page." + PAGE_NOTE + MEDIA_NOTE))
+    "related keywords." + PAGE_NOTE + MEDIA_NOTE))
 async def search_posts(
     query: Annotated[str, Field(description="Keyword or phrase to search for.")],
     cursor: Cursor = None,
+    limit: Limit = DEFAULT_LIMIT,
 ) -> CallToolResult:
     def work():
-        data = _validate(schemas.KeywordSchema, {"query": query, "cursor": cursor})
-        return _fetch("search_posts", discovery.search_keyword, data, cache_config.KEYWORD_CACHE)
+        return _paged("search_posts", discovery.search_keyword, schemas.KeywordSchema,
+                      {"query": query, "cursor": cursor}, cache_config.KEYWORD_CACHE, "posts", "post_count", limit)
     return await _run("search_posts", work)
 
 
 @server.tool(annotations=READ_ONLY, description=(
-    "Get the top reels for a hashtag, 12 per page." + PAGE_NOTE + MEDIA_NOTE))
+    "Get the top reels for a hashtag." + PAGE_NOTE + MEDIA_NOTE))
 async def get_hashtag_posts(
     tag: Annotated[str, Field(description="Hashtag (with or without #) or an instagram.com/explore/tags/ link.")],
     cursor: Cursor = None,
+    limit: Limit = DEFAULT_LIMIT,
 ) -> CallToolResult:
     def work():
-        data = _validate(schemas.TagSchema, {"tag": tag, "cursor": cursor})
-        return _fetch("get_hashtag_posts", discovery.hashtag_posts, data, cache_config.KEYWORD_CACHE)
+        return _paged("get_hashtag_posts", discovery.hashtag_posts, schemas.TagSchema,
+                      {"tag": tag, "cursor": cursor}, cache_config.KEYWORD_CACHE, "posts", "post_count", limit)
     return await _run("get_hashtag_posts", work)
 
 

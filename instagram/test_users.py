@@ -37,13 +37,13 @@ def test_posts_come_from_the_grid_first_and_the_app_feed_only_stands_in_for_page
     monkeypatch.setattr(U, "lookup", lambda user: raw)
     calls = []
 
-    def web(raw_user, cursor):
+    def web(raw_user, cursor, window=slice(None)):
         calls.append(("web", cursor))
-        return [{"id": "w"}], "AQnext", True
+        return [{"id": "w"}], "AQnext", True, 1
 
-    def app(raw_user, cursor):
+    def app(raw_user, cursor, window=slice(None)):
         calls.append(("app", cursor))
-        return [{"id": "a"}], "9_1", True
+        return [{"id": "a"}], "9_1", True, 1
 
     monkeypatch.setattr(U, "_web_posts", web)
     monkeypatch.setattr(U, "_app_posts", app)
@@ -68,7 +68,7 @@ def test_a_grid_cursor_never_falls_back_to_the_app_feed(monkeypatch):
     from instagram import users as U
     monkeypatch.setattr(U, "lookup", lambda user: {"pk": "1", "username": "nike"})
     monkeypatch.setattr(U, "_web_posts", _raise(F.InstagramBlocked("x")))
-    monkeypatch.setattr(U, "_app_posts", lambda raw_user, cursor: pytest.fail("app feed asked with a grid cursor"))
+    monkeypatch.setattr(U, "_app_posts", lambda raw_user, cursor, window: pytest.fail("app feed asked with a grid cursor"))
     with pytest.raises(F.InstagramBlocked):
         U.get_posts({"username": "nike"}, cursor="AQHTEV_lmxEgvDx9KS")
 
@@ -76,8 +76,8 @@ def test_a_grid_cursor_never_falls_back_to_the_app_feed(monkeypatch):
 def test_an_app_cursor_pages_the_app_feed_or_asks_for_a_restart(monkeypatch):
     from instagram import users as U
     monkeypatch.setattr(U, "lookup", lambda user: {"pk": "1", "username": "nike"})
-    monkeypatch.setattr(U, "_web_posts", lambda raw_user, cursor: pytest.fail("grid asked with an app cursor"))
-    monkeypatch.setattr(U, "_app_posts", lambda raw_user, cursor: ([{"id": "a"}], None, False))
+    monkeypatch.setattr(U, "_web_posts", lambda raw_user, cursor, window: pytest.fail("grid asked with an app cursor"))
+    monkeypatch.setattr(U, "_app_posts", lambda raw_user, cursor, window: ([{"id": "a"}], None, False, 1))
     assert U.get_posts({"username": "nike"}, cursor="4016750272540708224_13460080")["posts"] == [{"id": "a"}]
     monkeypatch.setattr(U, "_app_posts", _raise(F.InstagramBlocked("403")))
     with pytest.raises(F.InstagramBadRequest, match="first page again"):
@@ -108,7 +108,7 @@ def test_grid_page_is_filled_in_and_keeps_the_grid_play_count(monkeypatch):
 
     monkeypatch.setattr(U, "graphql", gql)
     monkeypatch.setattr(U.posts_api, "full_item", full_item)
-    posts, cursor, more = U._web_posts({"pk": "13460080", "username": "nike"}, None)
+    posts, cursor, more, size = U._web_posts({"pk": "13460080", "username": "nike"}, None)
     assert asked[U.POSTS_GRID_QUERY] == {"first": 12, "username": "nike"}
     assert Q.variables_for(U.POSTS_GRID_QUERY)["__relay_internal__pv__PolarisSEOIsCrawlerrelayprovider"] is True
     assert [p["code"] for p in posts] == ["De-XRdaPg2A", "DeySgo5Bn_M", "Dek_RAKjMDJ"]
@@ -120,7 +120,24 @@ def test_grid_page_is_filled_in_and_keeps_the_grid_play_count(monkeypatch):
     # a post the full queries refused keeps its grid fields
     assert carousel["type"] == "carousel" and carousel["stats"]["like_count"] == 42505
     assert carousel["published_at"] is None and carousel["image"]
-    assert cursor and cursor.startswith("AQ") and more is True
+    assert cursor and cursor.startswith("AQ") and more is True and size == 3
+
+
+def test_a_window_fills_in_only_the_posts_it_returns(monkeypatch):
+    from instagram import users as U
+    monkeypatch.setattr(U, "graphql", lambda name, retry_execution_errors=True, **v: _grid_fixture())
+    filled = []
+
+    def full_item(media_id, code):
+        filled.append(code)
+        raise F.InstagramGated("keep the grid fields")
+
+    monkeypatch.setattr(U.posts_api, "full_item", full_item)
+    monkeypatch.setattr(U, "lookup", lambda user: {"pk": "13460080", "username": "nike", "is_private": False})
+    page = U.get_posts({"username": "nike"}, offset=1, limit=1)
+    assert [p["code"] for p in page["posts"]] == ["DeySgo5Bn_M"] and filled == ["DeySgo5Bn_M"]
+    assert page["post_count"] == 1 and page["page_post_count"] == 3 and page["next_cursor"].startswith("AQ")
+    assert "page_post_count" not in U.get_posts({"username": "nike"})     # the REST answer is unchanged
 
 
 def test_grid_cursor_errors_private_accounts_and_missing_users(monkeypatch):

@@ -94,6 +94,57 @@ def test_get_post_comments_pages_with_cursor(monkeypatch):
     assert [v["after"] for _, v in upstream.calls] == [None, "abc"]
 
 
+def test_limit_pages_through_one_cached_page_then_moves_to_the_next(monkeypatch):
+    upstream = Upstream({"PolarisLoggedOutDesktopWWWPostCommentsPaginationQuery": load("comments_page.json")})
+    monkeypatch.setattr(posts, "graphql", upstream)
+
+    seen, cursor = [], None
+    for expected in (2, 1):                  # the fixture page holds 3 comments
+        page = call(mcp_server.get_post_comments, post=REEL_CODE, limit=2, cursor=cursor).structured_content
+        assert page["comment_count"] == len(page["comments"]) == expected and page["has_more"] is True
+        seen += [c["id"] for c in page["comments"]]
+        cursor = page["next_cursor"]
+    assert len(set(seen)) == 3 and len(upstream.calls) == 1          # slices 2+ come from the cache
+    assert cursor.startswith("p:0:{")                                 # Instagram's own cursor, wrapped
+
+    call(mcp_server.get_post_comments, post=REEL_CODE, limit=2, cursor=cursor)
+    assert upstream.calls[-1][1]["after"] == cursor[len("p:0:"):]
+
+
+def test_get_profile_posts_fills_in_only_the_requested_slice(monkeypatch):
+    upstream = Upstream({
+        "PolarisLoggedOutDesktopWWWProfileRootContentQuery": load("profile_root_nike.json"),
+        users.POSTS_GRID_QUERY: load("posts_grid_nike.json")["data"],
+    })
+    monkeypatch.setattr(users, "graphql", upstream)
+    filled = []
+
+    def full_item(media_id, code):
+        filled.append(code)
+        raise InstagramGated("keep the grid fields")
+
+    monkeypatch.setattr(users.posts_api, "full_item", full_item)
+
+    first = call(mcp_server.get_profile_posts, username="nike", limit=2).structured_content
+    assert first["post_count"] == 2 and len(filled) == 2 and "page_post_count" not in first
+    assert first["next_cursor"] == "p:2:" and first["has_more"] is True
+    second = call(mcp_server.get_profile_posts, username="nike", limit=2, cursor=first["next_cursor"]).structured_content
+    assert second["post_count"] == 1 and len(filled) == 3
+    assert [p["code"] for p in first["posts"] + second["posts"]] == filled
+    assert second["next_cursor"].startswith("p:0:AQ")
+
+
+def test_a_cursor_from_instagram_itself_still_works_and_a_mangled_one_is_rejected(monkeypatch):
+    upstream = Upstream({"PolarisLoggedOutPopularSearchPageQuery": load("popular_travel.json")})
+    monkeypatch.setattr(discovery, "graphql", upstream)
+    assert not call(mcp_server.search_posts, query="travel", cursor="QVFCabc").is_error
+    assert upstream.calls[-1][1]["after"] == "QVFCabc"
+
+    result = call(mcp_server.search_posts, query="travel", cursor="p:x:QVFCabc")
+    assert result.structured_content["error"]["code"] == "invalid_input"
+    assert len(upstream.calls) == 1
+
+
 def test_get_profile_survives_a_failed_enrichment(monkeypatch):
     upstream = Upstream({
         "PolarisLoggedOutDesktopWWWProfileRootContentQuery": load("profile_root_nike.json"),

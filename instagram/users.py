@@ -205,14 +205,18 @@ def _filled_in(node):
     return item
 
 
-def _web_posts(raw_user, cursor):
+def _web_posts(raw_user, cursor, window=slice(None)):
+    """One grid page -> (posts, next_cursor, has_more, page_size). Only the
+    posts in `window` are filled in and returned; page_size counts the
+    whole page."""
     nodes, next_cursor, has_more = _grid_page(raw_user, cursor)
-    items = run_parallel([lambda node=node: _filled_in(node) for node in nodes])
+    picked = nodes[window]
+    items = run_parallel([lambda node=node: _filled_in(node) for node in picked])
     posts = P.media_list(items, owner=P.user_ref(raw_user))
-    return posts, next_cursor, has_more
+    return posts, next_cursor, has_more, len(nodes)
 
 
-def _app_posts(raw_user, cursor):
+def _app_posts(raw_user, cursor, window=slice(None)):
     username = str(raw_user.get("username"))
     params = {"count": PAGE_SIZE}
     if cursor:
@@ -226,25 +230,31 @@ def _app_posts(raw_user, cursor):
     posts = P.media_list(data.get("items"), owner=P.user_ref(raw_user))
     has_more = bool(P.to_bool(data.get("more_available")))
     next_cursor = P.clean(data.get("next_max_id")) if has_more else None
-    return posts, next_cursor, has_more
+    return posts[window], next_cursor, has_more, len(posts)
 
 
-def get_posts(user, cursor=None):
+def get_posts(user, cursor=None, offset=0, limit=None):
     """The user's timeline (posts, reels shared to the grid, carousels),
-    newest first, 12 per page."""
+    newest first, 12 per page.
+
+    With `limit`, only posts [offset, offset + limit) of the page are filled
+    in and returned (one full-item query each instead of twelve), and the
+    answer adds `page_post_count`, the size of the whole page, so a caller
+    can page through it before moving on to `next_cursor`."""
     raw_user = lookup(user)
+    window = slice(offset, None if limit is None else offset + limit)
     if cursor and _APP_CURSOR_RE.fullmatch(cursor):
         # an app-feed cursor (handed out before 2026-10-28) only pages the
         # app feed; the grid cannot decode it
         try:
-            posts, next_cursor, has_more = _app_posts(raw_user, cursor)
+            posts, next_cursor, has_more, page_size = _app_posts(raw_user, cursor, window)
         except InstagramTimeout:
             raise
         except InstagramUpstreamError:
             raise InstagramBadRequest(STALE_APP_CURSOR)
     else:
         try:
-            posts, next_cursor, has_more = _web_posts(raw_user, cursor)
+            posts, next_cursor, has_more, page_size = _web_posts(raw_user, cursor, window)
         except InstagramUpstreamError as grid_error:
             # the app feed cannot continue a grid cursor (it would answer
             # page 1 again), so it only stands in for a first page. Any
@@ -254,12 +264,12 @@ def get_posts(user, cursor=None):
             if cursor:
                 raise
             try:
-                posts, next_cursor, has_more = _app_posts(raw_user, None)
+                posts, next_cursor, has_more, page_size = _app_posts(raw_user, None, window)
             except (InstagramUpstreamError, InstagramBadRequest, InstagramNotFound):
                 raise grid_error
-    if P.to_bool(raw_user.get("is_private")) and not posts:
+    if P.to_bool(raw_user.get("is_private")) and not page_size:
         has_more = False
-    return {
+    out = {
         "user": P.user_ref(raw_user),
         "is_private": P.to_bool(raw_user.get("is_private")),
         "post_count": len(posts),
@@ -267,6 +277,9 @@ def get_posts(user, cursor=None):
         "next_cursor": next_cursor,
         "has_more": has_more,
     }
+    if limit is not None:
+        out["page_post_count"] = page_size
+    return out
 
 
 # ---- reels ---------------------------------------------------------------------------------
